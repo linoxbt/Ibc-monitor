@@ -13,11 +13,10 @@ echo "📦 Installing Python dependencies..."
 pip install mnemonic bip32utils ecdsa bech32 requests cosmospy > /dev/null 2>&1
 echo "✅ Dependencies installed."
 
-# Step 3: Execute the Python Script
+# Step 3: Execute the Python Script with Prompts
 echo "🚀 Running IBC monitor script..."
-exec "$VIRTUAL_ENV/bin/python3" - << 'EOF'
+python3 - << 'EOF'
 import json
-import configparser
 import requests
 import time
 import random
@@ -27,16 +26,19 @@ from bip32utils import BIP32Key
 from hashlib import sha256
 import ecdsa
 import bech32
-from cosmospy import Transaction, BIP32DerivationError
+from cosmospy import Transaction
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 
 # Prompt for Wallet Input
-WALLET_FILE = "wallet.json"
 print("Wallet Options:")
 print("1. Generate a new wallet (mnemonic will be displayed)")
 print("2. Use an existing private key")
-wallet_choice = input("Enter your choice (1 or 2): ").strip()
+while True:
+    wallet_choice = input("Enter your choice (1 or 2): ").strip()
+    if wallet_choice in ["1", "2"]:
+        break
+    print("❌ Invalid choice. Please enter 1 or 2.")
 
 if wallet_choice == "1":
     def generate_wallet():
@@ -66,8 +68,7 @@ if wallet_choice == "1":
 
     priv_key, mnemonic_phrase, stride_addr, union_addr = generate_wallet()
     print("⚠️ Save this mnemonic securely! It will be used to derive your addresses.")
-    with open(WALLET_FILE, "w") as f:
-        json.dump({"mnemonic": mnemonic_phrase}, f)
+    WALLET_INPUT = mnemonic_phrase
 elif wallet_choice == "2":
     while True:
         priv_key_input = input("Enter your private key (hex, 64 characters): ").strip()
@@ -82,49 +83,25 @@ elif wallet_choice == "2":
             break
         except ValueError:
             print("❌ Invalid hex format. Try again.")
-    with open(WALLET_FILE, "w") as f:
-        json.dump({"private_key": priv_key_input}, f)
-    print(f"✅ Private key saved to {WALLET_FILE}")
-else:
-    raise ValueError("Invalid choice. Please select 1 or 2.")
+    WALLET_INPUT = priv_key_input
+    print("✅ Private key accepted.")
 
-with open(WALLET_FILE, "r") as f:
-    wallet_data = json.load(f)
-WALLET_INPUT = wallet_data.get("private_key") or wallet_data.get("mnemonic")
+# Prompt for Telegram Configuration
+TELEGRAM_BOT_TOKEN = input("Enter your Telegram Bot Token: ").strip()
+TELEGRAM_CHAT_ID = input("Enter your Telegram Chat ID: ").strip()
+print("✅ Telegram configuration accepted.")
 
-# Prompt for Config if Missing
-CONFIG_FILE = "config.file"
-if not os.path.exists(CONFIG_FILE):
-    telegram_bot_token = input("Enter your Telegram Bot Token: ")
-    telegram_chat_id = input("Enter your Telegram Chat ID: ")
-    config = configparser.ConfigParser()
-    config["RPC"] = {
-        "stride": "https://stride.testnet-1.stridenet.co/api",
-        "union": "https://rest.testnet-9.union.build/"
-    }
-    config["Telegram"] = {
-        "bot_token": telegram_bot_token,
-        "chat_id": telegram_chat_id
-    }
-    with open(CONFIG_FILE, "w") as f:
-        config.write(f)
-    print(f"✅ Config saved to {CONFIG_FILE}")
-
-config = configparser.ConfigParser()
-config.read(CONFIG_FILE)
-
+# Define RPC Endpoints and Token Configuration
 RPCS = {
-    "stride": config["RPC"]["stride"],
-    "union": config["RPC"]["union"]
+    "stride": "https://stride.testnet-1.stridenet.co/api",
+    "union": "https://rest.testnet-9.union.build/"
 }
-TELEGRAM_BOT_TOKEN = config["Telegram"]["bot_token"]
-TELEGRAM_CHAT_ID = config["Telegram"]["chat_id"]
 
 TOKENS = {
     "stride": {"symbol": "STRD", "denom": "ustrd", "chain_id": "stride-internal-1"},
     "union": {"symbol": "UNO", "denom": "uuno", "chain_id": "union-testnet-9"}
 }
-MIN_TRANSFER_AMOUNT = 0.001
+MIN_TRANSFER_AMOUNT روی = 0.001
 TIMEOUT_HEIGHT_DELTA = 1000
 
 # Dynamically fetch IBC channels
@@ -182,24 +159,19 @@ def derive_addresses(input_data):
             sk = ecdsa.SigningKey.from_string(priv_key, curve=ecdsa.SECP256k1)
             vk = sk.verifying_key
             pubkey = b'\x02' + vk.to_string()[:32]
-            def get_address(pubkey, prefix):
-                sha = sha256(pubkey).digest()
-                ripemd = sha256(sha).digest()[:20]
-                return bech32.bech32_encode(prefix, bech32.convertbits(ripemd, 8, 5))
-            stride_address = get_address(pubkey, "stride")
-            union_address = get_address(pubkey, "union")
         else:
             priv_key = bytes.fromhex(input_data)
             sk = ecdsa.SigningKey.from_string(priv_key, curve=ecdsa.SECP256k1)
             vk = sk.verifying_key
             pubkey = b'\x02' + vk.to_string()[:32]
-            def get_address(pubkey, prefix):
-                sha = sha256(pubkey).digest()
-                ripemd = sha256(sha).digest()[:20]
-                return bech32.bech32_encode(prefix, bech32.convertbits(ripemd, 8, 5))
-            stride_address = get_address(pubkey, "stride")
-            union_address = get_address(pubkey, "union")
-
+        
+        def get_address(pubkey, prefix):
+            sha = sha256(pubkey).digest()
+            ripemd = sha256(sha).digest()[:20]
+            return bech32.bech32_encode(prefix, bech32.convertbits(ripemd, 8, 5))
+        
+        stride_address = get_address(pubkey, "stride")
+        union_address = get_address(pubkey, "union")
         print(f"Derived Stride Address: {stride_address}")
         print(f"Derived Union Address: {union_address}")
         return priv_key, stride_address, union_address
@@ -379,11 +351,7 @@ def perform_ibc_transfer(priv_key, source_chain, source_addr, dest_chain, dest_a
 
 if __name__ == "__main__":
     print("⚠️ Note: IBC channels fetched dynamically. Check Telegram logs if transfers fail.")
-    if wallet_choice == "1":
-        STRIDE_ADDRESS = stride_addr
-        UNION_ADDRESS = union_addr
-    else:
-        priv_key, STRIDE_ADDRESS, UNION_ADDRESS = derive_addresses(WALLET_INPUT)
+    priv_key, STRIDE_ADDRESS, UNION_ADDRESS = derive_addresses(WALLET_INPUT)
 
     sequence_tracker = {}
     while True:
